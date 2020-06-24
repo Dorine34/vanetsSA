@@ -220,10 +220,96 @@ private:
   uint32_t msgReceived ;
 } ;
 
+
 // Vector of links
 std::vector<EmitterReceiver> m_vlinks ;
 // Hash map for EmitterReceiver results
 std::map<std::pair<uint32_t, uint32_t>, EmitterReceiver> s_emitterReceiverResult ;
+
+class EmitterReceiverTechno {
+
+public:
+
+  EmitterReceiverTechno(int emitter, int receiver, int techno) {
+
+    this->emitter = emitter ;
+    this->receiver = receiver ;
+    this->techno = techno ;
+    this->packetSize = PACKET_SIZE_DEFAULT ;
+    this->msgSent = 0 ;
+    this->msgReceived = 0 ;
+  }
+
+  EmitterReceiverTechno(int emitter, int receiver, int packetSize, int techno) {
+
+    this->emitter = emitter ;
+    this->receiver = receiver ;
+    this->packetSize = packetSize ;
+    this->msgSent = 0 ;
+    this->techno = techno ;
+    this->msgReceived = 0 ;
+  }
+
+  void MessageSent() {
+
+    this->msgSent ++ ;
+  }
+
+  void MessageReceived() {
+
+    this->msgReceived ++ ;
+  }
+
+  uint32_t GetEmitter() {
+    return this->emitter ;
+  }
+
+  uint32_t GetReceiver() {
+    return this->receiver ;
+  }
+
+  uint32_t GetPacketSize() {
+    return this->packetSize ;
+  }
+
+  uint32_t GetMessageSent() {
+    return this->msgSent ;
+  }
+
+  uint32_t GetMessageReceived() {
+    return this->msgReceived ;
+  }
+
+  uint32_t GetTechno() {
+    return this->emitter ;
+  }
+
+private:
+  /** Emitter
+   */
+  uint32_t emitter ;
+  /** Receiver
+   */
+  uint32_t receiver ;
+  /** Packet size
+   */
+  uint32_t packetSize ;
+  /** Messages sent
+   */
+  uint32_t msgSent ;
+  /** Messages received
+   */
+  uint32_t msgReceived ;
+  //techno
+    uint32_t techno ;
+
+} ;
+
+// Vector of links
+std::vector<EmitterReceiverTechno> m_vlinksTechno ;
+// Hash map for EmitterReceiver results
+std::map<std::pair<uint32_t, uint32_t>, EmitterReceiverTechno> s_emitterReceiverResultTechno ;
+
 
 /* -------------------------------------------------------------------------------------- */
 /*                                                                                        */
