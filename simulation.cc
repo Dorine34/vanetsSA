@@ -814,7 +814,7 @@ void InstallYansWave() {
  
    // Setup net devices
  
-    m_netDeviceContainer80211p = waveHelper.Install (wavePhy, waveMac, m_nodeContainer80211p) ;
+    m_netDeviceContainerWave= waveHelper.Install (wavePhy, waveMac, m_nodeContainerWave) ;
   
    if (m_asciiTrace != 0) {
        std::ostringstream logFileName ;
@@ -1004,9 +1004,12 @@ void InstallSocketApplications() {
   // Configuration of the applications
   // UdpClient -> UdpServer
   int i = 1 ;
+
   for (std::vector<EmitterReceiver>::iterator it = m_vlinks.begin() ; it != m_vlinks.end() ; it ++, i++) {
+
     if (it->GetTechno()==1)//80211p
     {
+
       NS_LOG_UNCOND("Link " << i << ": node " << it->GetEmitter() << " send information to " << it->GetReceiver()) ;
 
       uint32_t nNodeServer = it->GetReceiver() ;
@@ -1020,18 +1023,23 @@ void InstallSocketApplications() {
       recvSink->Bind (local);
       recvSink->SetRecvCallback (MakeCallback (&ReceivePacket));
 
+      cout<<"serveur 80211p configuré avec :"<<m_nodeContainer80211p.Get (nNodeServer)->GetId()<< " correspondant à "<<nNodeServer <<endl;
     // Configure the client
       Ptr<Socket> source = Socket::CreateSocket ( m_nodeContainer80211p.Get(nNodeClient), tid);
       InetSocketAddress remote = InetSocketAddress (destAddress.GetLocal(), port);
       source->SetAllowBroadcast (true);
       source->Bind();
       source->Connect (remote);  // Used to set the destination address of the outgoing packets
+      cout<<"client 80211p configuré avec :"<<m_nodeContainer80211p.Get (nNodeClient)->GetId()<< " correspondant à "<<nNodeClient <<endl;
 
     // Display
       m_nNodesEmitter = m_vlinks.size() ;
       double offset = 0.001*(i-1) ; //* nNodeClient ;
     
       Ipv4InterfaceAddress srcAddress = GetIpv4Address(nNodeClient) ;
+
+      cout<<"adresse source de :"<<nNodeClient<<endl;
+
       NS_LOG_UNCOND("\tClient " << srcAddress.GetLocal() << " (" << nNodeClient << ") sends information to " << destAddress.GetLocal() << " (" << nNodeServer << ")" << " (start time = " << Seconds(m_startSendTime + offset).GetSeconds() << " s)") ;
      
       if ( it->GetUsed())
@@ -1042,26 +1050,39 @@ void InstallSocketApplications() {
     {
       NS_LOG_UNCOND("Link " << i << ": node " << it->GetEmitter() << " send information to " << it->GetReceiver()) ;
 
-      uint32_t nNodeServer = it->GetReceiver() ;
-      uint32_t nNodeClient = it->GetEmitter() ;
+      uint32_t nNodeServer = it->GetReceiver()-2 ;
+      uint32_t nNodeClient = it->GetEmitter()-2 ;
       uint32_t packetSize = it->GetPacketSize() ;
     // Configure the server
-      Ipv4InterfaceAddress destAddress = GetIpv4Address(nNodeServer) ;
-      Ptr<Socket> recvSink = Socket::CreateSocket (m_nodeContainerWave.Get (nNodeServer-2), tid);
+      Ipv4InterfaceAddress destAddress = GetIpv4Address(nNodeServer+2) ;
+      Ptr<Socket> recvSink = Socket::CreateSocket (m_nodeContainerWave.Get (nNodeServer), tid);
       InetSocketAddress local = InetSocketAddress (Ipv4Address::GetAny(), port);
       recvSink->Bind (local);
       recvSink->SetRecvCallback (MakeCallback (&ReceivePacket));
+      cout<<"serveur 80211p configuré avec :"<<m_nodeContainerWave.Get (nNodeServer)->GetId()<< " correspondant à "<<nNodeServer <<endl;
+
     // Configure the client
-      Ptr<Socket> source = Socket::CreateSocket ( m_nodeContainerWave.Get(nNodeClient-2), tid);
+
+      Ptr<Socket> source = Socket::CreateSocket ( m_nodeContainerWave.Get(nNodeClient), tid);
+
       InetSocketAddress remote = InetSocketAddress (destAddress.GetLocal(), port);
+
       source->SetAllowBroadcast (true); 
       source->Bind();
       source->Connect (remote);  // Used to set the destination address of the outgoing packets
 
+
+      cout<<"client wave configuré avec :"<<m_nodeContainerWave.Get (nNodeClient)->GetId()<< " correspondant à "<<nNodeClient <<endl;
+
     // Display
       m_nNodesEmitter = m_vlinks.size() ;
       double offset = 0.001*(i-1) ; //* nNodeClient ;
-      Ipv4InterfaceAddress srcAddress = GetIpv4Address(nNodeClient) ;
+      Ipv4InterfaceAddress srcAddress = GetIpv4Address(nNodeClient+2) ;
+
+      cout<<"adresse source de :"<<nNodeClient<<endl;
+
+
+
       NS_LOG_UNCOND("\tClient " << srcAddress.GetLocal() << " (" << nNodeClient << ") sends information to " << destAddress.GetLocal() << " (" << nNodeServer << ")" << " (start time = " << Seconds(m_startSendTime + offset).GetSeconds() << " s)") ;
       if ( it->GetUsed())
       Simulator::Schedule (Seconds(m_startSendTime + offset), &GenerateTrafficWave, nNodeServer, nNodeClient, source, packetSize, m_packetInterval);
@@ -1117,7 +1138,24 @@ void InstallApplications () {
   for (std::vector<EmitterReceiver>::iterator it = m_vlinks.begin() ; it != m_vlinks.end() ; it ++) {
     std::pair<uint32_t, uint32_t> pairER = std::make_pair(it->GetEmitter(), it->GetReceiver()) ;
     s_emitterReceiverResult.insert(std::make_pair(pairER, *it)) ;
+     std::cout <<  pairER.first << " => " <<  pairER.second << '\n';
   }
+
+  for (map<pair<uint32_t, uint32_t>, EmitterReceiver>::iterator it=s_emitterReceiverResult.begin(); it!=s_emitterReceiverResult.end(); ++it)
+  {
+    cout<<"("<< it->first.first << " => " << it->first.second<<") donne "
+     << "("<<it->second.GetEmitter()<<"=>" << it->second.GetReceiver()
+     << "), taille paquet " << it->second.GetPacketSize()
+     << ", avec techno "<< it->second.GetTechno()
+     <<" ( "<< it->second.GetUsed() <<")"
+     <<'\n';
+
+  }
+   // cout<< it->first.first << " => " << it->second << '\n';
+   
+
+   
+
 
   InstallSocketApplications() ;
 
@@ -1159,9 +1197,9 @@ int main (int argc, char *argv[]) {
     }
   
   CreateNS2Nodes();
-  //InstallYansWifi80211p();  
-  InstallYansWifi80211p();
+  InstallYansWifi80211p();  
   //InstallYansWave();
+
   InstallNoProtocol() ;
   InstallApplications() ;
 
@@ -1169,7 +1207,7 @@ int main (int argc, char *argv[]) {
 
 
   for (std::vector<EmitterReceiver>::iterator it = m_vlinks.begin() ; it != m_vlinks.end() ; it ++) {
-    cout<<it->GetEmitter()<< " et "<< it->GetReceiver()<<" avec technologie "<< it->GetTechno()<<" et "<<it->GetUsed() <<endl;
+    cout<<it->GetEmitter()<< " vers "<< it->GetReceiver()<<" avec technologie "<< it->GetTechno()<<" et it correspondant"<<it->GetUsed() <<endl;
   }
 
   cout<<"m_nodeContainer80211p"<<endl;
@@ -1180,7 +1218,6 @@ int main (int argc, char *argv[]) {
     cout<<(*i)->GetId()<<" ";  // some Node method
   }
   cout<<endl;
-
   for (i = m_nodeContainerWave.Begin (); i != m_nodeContainerWave.End (); ++i)
   {
 
@@ -1191,8 +1228,9 @@ int main (int argc, char *argv[]) {
   //std::ostringstream logFileNameAnim ;
   //logFileNameAnim << m_outputdir.c_str() << "animation" << ".xml" ;
   //std::cout << "Opening file " << logFileNameAnim.str() << std::endl ;                             
-  //AnimationInterface anim (logFileNameAnim.str().c_str()); // Mandatory    
-  
+  //AnimationInterface anim (logFileNameAnim.str().c_str()); // Mandatory   
+
+  cout<<" debut"<<endl;  // some Node method
   Simulator::Run ();
   Simulator::Destroy ();
 
