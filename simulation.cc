@@ -51,15 +51,17 @@
 #include <sys/types.h>
 
 
-using namespace std;
+#include <math.h>
+
 using namespace ns3;
+using namespace std;
 
 NS_LOG_COMPONENT_DEFINE ("PTGLsimulator");
 
 /** Physical mode for 802.11p */
 #define DEFAULT_PHYSICALMODE "OfdmRate6MbpsBW10MHz"
 
-// ************************************************************************************** Configuration parameters
+// **************************************** Configuration parameters
 
 /** Scenario file name with the absolute directory if needed */
 std::string m_scenarioFileName = "eloignement.tcl" ;
@@ -85,7 +87,7 @@ uint32_t m_testNumber = 0 ;
 uint32_t m_packetSize = PACKET_SIZE_DEFAULT ;
 
 /** Number of nodes */
-uint32_t m_nNodes = 2 ;
+uint32_t m_nNodes = 3 ;
 
 /** Packet time interval */
 double m_packetInterval = 1 ;
@@ -101,7 +103,7 @@ int m_stopSendTime = 180 ;
  */
 int m_lossModel = 1 ;
 
-// ************************************************************************************** End of configuration parameters
+// ***************************************** End of configuration parameters
 
 /* Configuration string */
 std::stringstream m_strPropagationLossConfig ;
@@ -113,20 +115,30 @@ double m_heightAboveZ = 1.5;
 /** In case of Grid => define the speed */
 double m_speed = 13.33;
 
+
+
+//RAT 
+
+double NETA=0.5;
+
 // ---------------- To read scenario files
 Ns2MobilityHelper *m_ns2Helper ;
 	
 // ---------------- name network
 /**
  */
-NodeContainer m_nodeContainer80211p ;//1
-NodeContainer m_nodeContainerWave ;//3
-
+NodeContainer m_nodeContainer ;
+NodeContainer m_nodeContainer80211p ;
+NodeContainer m_nodeContainer80211b ;
+NodeContainer m_nodeContainerWave ;
 
 /**
  */
+NetDeviceContainer m_netDeviceContainer;
 NetDeviceContainer m_netDeviceContainer80211p;
+NetDeviceContainer m_netDeviceContainer80211b;
 NetDeviceContainer m_netDeviceContainerWave;
+	
 
 /** Number of nodes which send a message
  */
@@ -134,12 +146,13 @@ uint32_t m_nNodesEmitter ;
 
 /**
  */
+Ipv4InterfaceContainer m_ipv4InterfaceContainer;
 Ipv4InterfaceContainer m_ipv4InterfaceContainer80211p;
+Ipv4InterfaceContainer m_ipv4InterfaceContainer80211b;
 Ipv4InterfaceContainer m_ipv4InterfaceContainerWave;
 
 std::string m_lossModelName ;
-
-int m_80211mode = 1 ; // 802.11p
+int m_80211mode = 1 ; // 1->802.11p, 2->802.11b, 3->wave 
 int m_fading = 0 ;
 int m_verbose = 0 ;
 std::string m_phyMode = "OfdmRate6MbpsBW10MHz" ;
@@ -147,15 +160,91 @@ int m_txPower = 0 ;
 int m_asciiTrace = 1 ;
 std::string m_trName = "trFile" ;
 
+
+
 /* -------------------------------------------------------------------------------------- */
 /*                                                                                        */
 /*                          Class to build nodes link                                     */
 /*                                                                                        */
 /* -------------------------------------------------------------------------------------- */
+
+
 /**
- * Class to store information about links between nodes with emitter / receiver / packet size
- * and messages sent and received
+ * Class to store information about links 
+ *       between nodes with emitter / receiver / packet size
+ *       and messages sent and received
  */
+
+int compteurMessagesRecus ;
+int compteurMessagesEmis ;
+
+class TechnoUsed {
+
+public:
+        TechnoUsed() = default;
+	TechnoUsed (uint32_t number, double throughput, uint32_t nbUsed) {
+		this->number = number ;
+		this->throughput = throughput ;
+		this->nbUsed = nbUsed ;
+		if (nbUsed<=1)
+		{
+		        this->shareThroughput = throughput ;
+		}
+		else
+		{
+		        this->shareThroughput = throughput/nbUsed ;
+		}
+		this->hysteresis=2;
+	}
+        
+	uint32_t GetNumber() {
+		return this->number ;
+	}
+	
+	double GetHysteresis() {
+		return this->hysteresis ;
+	}
+	double GetThroughput() {
+		return this->throughput ;
+	}
+
+	void SetThroughput(double throughput) {
+		this->throughput = throughput ;
+	}
+
+	uint32_t GetnbUsed() {
+		return this->nbUsed ;
+	}
+
+	double GetshareThroughput() {
+		return this->shareThroughput ;
+	}
+
+	void SetnbUsed(uint32_t nbUsed) {
+		this->nbUsed = nbUsed ;
+		if (nbUsed<=1)
+		{
+		        this->shareThroughput = throughput ;
+		}
+		else
+		{
+		        this->shareThroughput = throughput/nbUsed ;
+		}
+	}
+
+private:
+
+	uint32_t number ;//indice of techno
+	
+	double throughput ;//global throughput
+ 
+	double shareThroughput ;//shared throughput
+	
+	double hysteresis ;//shared throughput
+	
+	uint32_t nbUsed ;//nb Nodes which used this techno
+	
+} ;
 
 
 class EmitterReceiver {
@@ -169,10 +258,6 @@ public:
     this->packetSize = PACKET_SIZE_DEFAULT ;
     this->msgSent = 0 ;
     this->msgReceived = 0 ;
-    this->techno=m_80211mode;    
-    this->hysteresis=0;
-    this->time= 0;
-    this->used= true;
   }
 
   EmitterReceiver(int emitter, int receiver, int packetSize) {
@@ -182,66 +267,23 @@ public:
     this->packetSize = packetSize ;
     this->msgSent = 0 ;
     this->msgReceived = 0 ;
-    this->techno=m_80211mode;    
-    this->hysteresis=0;
-    this->time= 0;
-    this->used= true;
+    this->technoUsed = TechnoUsed(1,6,0) ;
   }
 
-  EmitterReceiver(int emitter, int receiver, int packetSize, int techno) {
+  EmitterReceiver(int emitter, 
+                  int receiver, 
+                  int packetSize, 
+                  TechnoUsed technoUsed, 
+                  bool isTechnoUsed) {
 
     this->emitter = emitter ;
     this->receiver = receiver ;
     this->packetSize = packetSize ;
     this->msgSent = 0 ;
     this->msgReceived = 0 ;
-    this->techno=techno;    
-    this->hysteresis=0;
-    this->time= 0;
-    this->used= true;
+    this->technoUsed = technoUsed ;
+    this->isTechnoUsed = isTechnoUsed ;
   }
-
-
-  EmitterReceiver(int emitter, int receiver, int packetSize, int techno, bool used) {
-
-    this->emitter = emitter ;
-    this->receiver = receiver ;
-    this->packetSize = packetSize ;
-    this->msgSent = 0 ;
-    this->msgReceived = 0 ;
-    this->techno=techno;    
-    this->hysteresis=0;
-    this->time= 0;
-    this->used= used;
-  }
-
-
-  EmitterReceiver(int emitter, int receiver, int techno, int hysteresis, time_t time) {
-
-    this->emitter = emitter ;
-    this->receiver = receiver ;
-    this->packetSize = PACKET_SIZE_DEFAULT ;
-    this->msgSent = 0 ;
-    this->msgReceived = 0 ;
-    this->techno = techno ;
-    this->hysteresis = hysteresis ;
-    this->time=time ;
-    this->used=true ;
-  }
-
-  EmitterReceiver(int emitter, int receiver, int packetSize, int techno, int hysteresis, time_t time) {
-
-    this->emitter = emitter ;
-    this->receiver = receiver ;
-    this->packetSize = packetSize ;
-    this->msgSent = 0 ;
-    this->msgReceived = 0 ;
-    this->techno = techno ;
-    this->hysteresis = hysteresis ;
-    this->time=time ;
-    this->used=true ;
-  }
-
 
   void MessageSent() {
 
@@ -273,45 +315,57 @@ public:
     return this->msgReceived ;
   }
 
-  uint32_t GetTechno() {
-    return this->techno;
+
+  TechnoUsed GetTechnoUsed() {
+    return this->technoUsed ;
   }
 
-  void SetTechno(int techno) {
-    this->techno=techno;
+   bool getIsTechnoUsed() {
+    return this->isTechnoUsed ;
+  }
+
+  void setTechnoUsed(TechnoUsed technoUsed) {
+     this->technoUsed= technoUsed;
+  }
+
+   void setIsTechnoUsed(bool isTechnoUsed) {
+    this->isTechnoUsed=isTechnoUsed ;
+  }
+
+   void setIsNodeElectedS1(bool isElected) {
+    this->isNodeElecteds1=isElected ;
   }
   
-  uint32_t GetHysteresis() {
-    return this->hysteresis ;
+   void setIsNodeElectedS2(bool isElected) {
+    this->isNodeElecteds2=isElected ;
   }
-
-  void SetHysteresis(int hysteresis)
-  {
-    this->hysteresis=hysteresis;
+  
+   bool getIsNodeElectedS1() {
+    return this->isNodeElecteds1 ;
   }
-
-  time_t GetTime()
-  {
-    return this->time;
+  
+   bool getIsNodeElectedS2() {
+    return this->isNodeElecteds2 ;
   }
-
-
-  void SetTime(time_t time)
-  {
-    this->time=time;
+  
+   double getwS1() {
+    return this->w1 ;
   }
-
-
-  void SetUsed(bool used)
-  {
-    this->used=used;
+  
+   double getwS2() {
+    return this->w2 ;
   }
-
-
-  bool GetUsed()
-  {
-    return this->used;
+  
+  
+   void setwS1(double w1) {
+    this->w1=w1 ;
   }
+  
+   void setwS2(double w1) {
+    this->w2=w2 ;
+  }
+  
+  
 private:
   /** Emitter
    */
@@ -324,27 +378,37 @@ private:
   uint32_t packetSize ;
   /** Messages sent
    */
+
   uint32_t msgSent ;
   /** Messages received
    */
   uint32_t msgReceived ;
 
-  uint32_t techno ;
-  /** Messages received
+  /** technology Used
    */
-  uint32_t hysteresis ;
+  TechnoUsed technoUsed ;
 
-  time_t time;
-
-  bool used ;
+  /** true if technology Used, false otherwise
+   */
+  bool isTechnoUsed ;
+  
+  bool isNodeElecteds1 ;
+  bool isNodeElecteds2 ;
+  double w1 ;
+  double w2 ;
+  
 } ;
-
 
 // Vector of links
 std::vector<EmitterReceiver> m_vlinks ;
+
+    vector<vector<double> > vecQ1; 
+    vector<vector<double> > vecY1; 
+    
+    vector<vector<double> > vecQ2; 
+    vector<vector<double> > vecY2; 
 // Hash map for EmitterReceiver results
 std::map<std::pair<uint32_t, uint32_t>, EmitterReceiver> s_emitterReceiverResult ;
-
 
 /* -------------------------------------------------------------------------------------- */
 /*                                                                                        */
@@ -397,6 +461,7 @@ private:
 	int m_ttlValue ;
 } ;
 
+
 // Map to store information about sent time in application layer
 std::map<uint64_t, PacketInformation> s_appPacketInformation ;
 
@@ -406,50 +471,475 @@ std::map<uint64_t, PacketInformation> s_appPacketInformation ;
 /*                                                                                        */
 /* -------------------------------------------------------------------------------------- */
 
+
+bool testC1(uint32_t nEmitter, uint32_t potentialTechno, uint32_t actualTechno)
+{
+        double ActualSharedThroughput=0;
+        
+        uint32_t PotentialNbUsers=0;
+        double PotentialGlobalThroughput=0;
+        
+  for (std::vector<EmitterReceiver>::iterator it = m_vlinks.begin() ; it != m_vlinks.end() ; it ++) {
+    
+    if ((it->GetTechnoUsed ().GetNumber()==actualTechno) && (it->getIsTechnoUsed ()) )
+        {
+               cout <<it->GetEmitter ()<<"->"<<it->GetReceiver () << " : "<<it->GetTechnoUsed ().GetNumber()<<endl;
+              ActualSharedThroughput=it->GetTechnoUsed ().GetshareThroughput();
+        }
+        
+    if (it->GetTechnoUsed ().GetNumber()==potentialTechno) 
+        {
+              PotentialGlobalThroughput=it->GetTechnoUsed ().GetThroughput();
+              PotentialNbUsers=it->GetTechnoUsed ().GetnbUsed();
+        }
+        
+    }
+        double p1 =PotentialGlobalThroughput/(PotentialNbUsers+1);
+        double p2 =ActualSharedThroughput;
+ 
+        
+        return (p1/p2)>NETA;
+}
+
+
+void switchTechno(uint32_t nEmitter, uint32_t lastTechno, uint32_t newTechno)
+{      
+        uint32_t actualNbUsers=0;   
+        uint32_t newNbUsers=0;
+        
+  for (std::vector<EmitterReceiver>::iterator it = m_vlinks.begin() ; it != m_vlinks.end() ; it ++) {
+    
+    if ((it->GetTechnoUsed ().GetNumber()==lastTechno) && (it->getIsTechnoUsed ()) )
+        {
+              actualNbUsers=it->GetTechnoUsed ().GetnbUsed();
+        }
+        
+    if (it->GetTechnoUsed ().GetNumber()==newTechno) 
+        {
+              newNbUsers=it->GetTechnoUsed ().GetnbUsed();
+        }
+    }
+    
+    actualNbUsers--;
+    newNbUsers++;
+    
+  for (std::vector<EmitterReceiver>::iterator it = m_vlinks.begin() ; it != m_vlinks.end() ; it ++) {
+    
+    if (it->GetTechnoUsed().GetNumber()==lastTechno)  
+        {
+                it->GetTechnoUsed().SetnbUsed(actualNbUsers); 
+        }
+        
+    if (it->GetTechnoUsed ().GetNumber()==newTechno) 
+        {
+                it->GetTechnoUsed().SetnbUsed(newNbUsers); 
+        }    
+    
+    if (it->GetEmitter()==nEmitter)
+    {
+        if (it->GetTechnoUsed ().GetNumber()==newTechno)
+        {
+                it->setIsTechnoUsed(true);
+        }
+        else
+        {
+                it->setIsTechnoUsed(false);
+        
+        }
+    }
+    }
+}
+
+
+bool testC2(uint32_t nEmitter, uint32_t potentialTechno)
+{
+        
+        double PotentialshareThroughput=0;
+        double hysteresis=0;
+        
+        
+  for (std::vector<EmitterReceiver>::iterator it = m_vlinks.begin() ; it != m_vlinks.end() ; it ++) {
+    
+    if  ((it->GetTechnoUsed ().GetNumber()==nEmitter) && (it->getIsTechnoUsed ()))
+        {
+              hysteresis=it->GetTechnoUsed ().GetHysteresis();
+        }
+        
+    if (it->GetTechnoUsed ().GetNumber()==potentialTechno) 
+        { 
+              PotentialshareThroughput=it->GetTechnoUsed ().GetshareThroughput();
+        }
+        
+    }
+        return PotentialshareThroughput>hysteresis;
+}
+
+
+bool testC3()
+{
+        double p=0.5;
+        double random = 0;
+        random = rand()/(float)RAND_MAX;
+        cout<< "random "<< random<<endl; 
+        return random<p;
+}
+
+
+void updateW()
+{
+        uint32_t emitter =0;
+        bool twin =false;
+  for (std::vector<EmitterReceiver>::iterator it = m_vlinks.begin() ; it != m_vlinks.end() ; it ++) {
+    if  (it->getIsNodeElectedS1())
+    {
+        emitter = it->GetEmitter() ;
+        for (std::vector<EmitterReceiver>::iterator jt = m_vlinks.begin() ; jt != m_vlinks.end() ; jt ++) {
+                if  (jt->getIsNodeElectedS2())
+                {
+                        twin =true ;
+                }
+        }
+        for (std::vector<EmitterReceiver>::iterator jt = m_vlinks.begin() ; jt != m_vlinks.end() ; jt ++) {
+                if  ((jt->GetReceiver()==emitter)&& (it->getIsNodeElectedS1()))
+                {
+                        if (twin)
+                        {
+                                it->setwS1(jt->getwS1()/2);
+                        }
+                        else
+                        {
+                        
+                                it->setwS1(jt->getwS1());
+                        }
+                }
+        }
+    }
+  }
+  twin = false;
+    for (std::vector<EmitterReceiver>::iterator it = m_vlinks.begin() ; it != m_vlinks.end() ; it ++) {
+    if  (it->getIsNodeElectedS2())
+    {
+        emitter = it->GetEmitter() ;
+        for (std::vector<EmitterReceiver>::iterator jt = m_vlinks.begin() ; jt != m_vlinks.end() ; jt ++) {
+                if  (jt->getIsNodeElectedS1())
+                {
+                        twin =true ;
+                }
+        }
+        for (std::vector<EmitterReceiver>::iterator jt = m_vlinks.begin() ; jt != m_vlinks.end() ; jt ++) {
+                if  ((jt->GetReceiver()==emitter)&& (it->getIsNodeElectedS2()))
+                {
+                        if (twin)
+                        {
+                                it->setwS2(jt->getwS2()/2);
+                        }
+                        else
+                        {
+                        
+                                it->setwS2(jt->getwS2());
+                        }
+                }
+        }
+    }
+  }
+}
+
+
+
+
+void updateY(uint32_t receiver)
+{
+        double wsv1=0;
+        double y1=0;
+        double q1=0;
+        
+        double wsv2=0;
+        double y2=0;
+        double q2=0;
+        
+        
+        double GAMMA=0.5 ;
+        
+        double TAU=1 ;
+        uint32_t emitter =0;
+        int j=0;
+     for (std::vector<EmitterReceiver>::iterator i = m_vlinks.begin() ; i != m_vlinks.end() ; i ++, j++) {
+        // Vector to store column elements 
+        
+        emitter = i->GetEmitter();
+        if ((receiver ==i->GetEmitter()) )
+         {
+                if (i->getIsNodeElectedS1())
+                {
+                        wsv1=i->getwS1();
+                        wsv2=i->getwS2();
+                        
+                }
+                //y=vecY1[i][(int)emitter];
+                y2=vecY2[j][(int)emitter];
+                q2=vecQ2[j][(int)emitter];
+         }
+         vecY1[j][(int)emitter]=y1+GAMMA*( wsv1- TAU *y1)/q1;
+         vecY2[j][(int)emitter]=y2+GAMMA*( wsv2- TAU *y2)/q2;
+        } 
+         
+          
+}
+
+
+
+void updateQ(uint32_t receiver)
+{
+        uint32_t emitter =0;
+        int j=0;
+        
+        double tabY[m_nNodes]={0};
+        
+     for (std::vector<EmitterReceiver>::iterator i = m_vlinks.begin() ; i != m_vlinks.end() ; i ++, j++) {
+     
+        emitter = i->GetEmitter();
+        if (receiver == i->GetReceiver())
+        {
+                tabY[emitter]= vecY1[j][(int)emitter];
+        }
+     }
+        
+    double sumExpoY=0;
+    
+    
+    for (int i=0; i<(int)m_nNodes ; i++)
+    {
+        sumExpoY+= exp (tabY[i]);
+    } 
+     for (std::vector<EmitterReceiver>::iterator i = m_vlinks.begin() ; i != m_vlinks.end() ; i ++, j++) {
+     
+        if (receiver == i->GetReceiver())
+        {
+                for (int k = 0; k < (int) m_nNodes; k++)
+                {
+                        
+                        vecQ1[j][k]= exp(vecY1[j][k])/sumExpoY;
+                }
+     }
+     }  
+         emitter =0;
+         j=0;
+          sumExpoY=0;
+          
+          
+     for (std::vector<EmitterReceiver>::iterator i = m_vlinks.begin() ; i != m_vlinks.end() ; i ++, j++) {
+     
+        emitter = i->GetEmitter();
+        if (receiver == i->GetReceiver())
+        {
+                tabY[emitter]= vecY2[j][(int)emitter];
+        }
+     }
+        
+    
+    
+    for (int i=0; i<(int)m_nNodes ; i++)
+    {
+        sumExpoY+= exp (tabY[i]);
+    } 
+     for (std::vector<EmitterReceiver>::iterator i = m_vlinks.begin() ; i != m_vlinks.end() ; i ++, j++) {
+     
+        if (receiver == i->GetReceiver())
+        {
+                for (int k = 0; k < (int) m_nNodes; k++)
+                {
+                        
+                        vecQ2[j][k]= exp(vecY2[j][k])/sumExpoY;
+                }
+        }
+     }       
+}
+
+
+
+
+void neighbourChoice(uint32_t nReceiver, uint32_t nEmitter, uint32_t techno)
+{
+
+        uint32_t emitter =0;
+        double random = rand()/(float)RAND_MAX;
+        double tabY[m_nNodes]={0};
+        int j=0;
+     for (std::vector<EmitterReceiver>::iterator i = m_vlinks.begin() ; i != m_vlinks.end() ; i ++, j++) {
+        if (emitter == i->GetEmitter())
+        {
+                tabY[emitter]= vecQ1[j][(int)emitter];
+        }
+     }
+     
+     double test=0;
+     int i=0;
+     
+     while((random>test)&&(m_nNodes))
+     {
+        test+=tabY[i];
+        i++;
+     }
+     
+     uint32_t nElected = (uint32_t)i-1;
+     
+     
+     for (std::vector<EmitterReceiver>::iterator i = m_vlinks.begin() ; i != m_vlinks.end() ; i ++, j++) {
+        if ((emitter == i->GetEmitter()) && (i->getIsTechnoUsed())&&(i->getIsNodeElectedS1()))
+        {
+                if (nElected == i->GetReceiver())
+                {       
+                        i->setIsNodeElectedS1(true);
+                       cout<< "CHANGEMENT !!!!!!"<<endl<<endl;
+                }
+                       
+        }
+        else
+        {
+           if (emitter == i->GetEmitter())
+           {
+                       i->setIsNodeElectedS1(false);
+           
+           }
+        }     
+     }
+     
+     
+       emitter =0;
+       random = rand()/(float)RAND_MAX;
+       tabY[m_nNodes]={0};
+       j=0;
+     for (std::vector<EmitterReceiver>::iterator i = m_vlinks.begin() ; i != m_vlinks.end() ; i ++, j++) {
+        if (emitter == i->GetEmitter())
+        {
+                tabY[emitter]= vecQ2[j][(int)emitter];
+        }
+     }
+     
+     test=0;
+     i=0;
+     
+     while ((random>test)&&(i< (int)m_nNodes))
+     {
+        test+=tabY[i];
+        i++;
+        
+     }
+     
+     nElected = (uint32_t)i-1;
+     
+     
+     for (std::vector<EmitterReceiver>::iterator i = m_vlinks.begin() ; i != m_vlinks.end() ; i ++, j++) {
+        if ((emitter == i->GetEmitter()) && (i->getIsTechnoUsed())&&(i->getIsNodeElectedS2()))
+        {
+                if (nElected == i->GetReceiver())
+                {       
+                        i->setIsNodeElectedS2(true);
+                       cout<< "CHANGEMENT !!!!!!"<<endl;
+                }
+                       
+        }
+        else
+        {
+           if (emitter == i->GetEmitter())
+           {
+                       i->setIsNodeElectedS2(false);
+           
+           }
+      
+        }
+     }
+     
+}
+
+
 /**
- * Generate the traffic
+ * Generate the traffic avec choix de la techno
  */
-static void GenerateTraffic80211p (uint32_t nReceiver, uint32_t nEmitter, Ptr<Socket> socket, uint32_t pktSize, double pktInterval ) {
-
+static void GenerateTraffic (uint32_t nReceiver, 
+                             uint32_t nEmitter, 
+                             uint32_t techno, 
+                             Ptr<Socket> socket, 
+                             uint32_t pktSize, 
+                             double pktInterval ) {
+ 
   const uint8_t buffer[pktSize+3] = {1,2,3} ;
+  
+  
+  
+  updateW();
+  updateY(nReceiver);
+  updateQ(nReceiver);
+  neighbourChoice (nReceiver, nEmitter, techno);
   
   // -------------------------------------------------------
   // Packet to be sent
   Ptr<Packet> packet = Create<Packet> (buffer,pktSize);
   
   PacketInformation packetInfo = PacketInformation(Simulator::Now().GetSeconds()) ;
-  s_appPacketInformation.insert(std::pair<uint64_t, PacketInformation>(packet->GetUid(), packetInfo)) ;
+  s_appPacketInformation.insert(std::pair<uint64_t, 
+                                PacketInformation>(packet->GetUid(), packetInfo)) ;
   
   std::pair<uint32_t, uint32_t> pairER = std::make_pair(nEmitter, nReceiver) ;
-  std::map<std::pair<uint32_t, uint32_t>, EmitterReceiver>::iterator itRes = s_emitterReceiverResult.find(pairER) ;
+  std::map<std::pair<uint32_t, uint32_t>, EmitterReceiver>::iterator itRes = 
+                                        s_emitterReceiverResult.find(pairER) ;
   
   if (itRes != s_emitterReceiverResult.end()) {
     itRes->second.MessageSent() ;
   }
-  
-  Ptr<MobilityModel> mob = m_nodeContainer80211p.Get(nReceiver)->GetObject<MobilityModel>();
-  //Ptr<MobilityModel> mobWave = m_nodeContainerWave.Get(nReceiver)->GetObject<MobilityModel>();
-  Vector pos = mob->GetPosition ();
-  //std::cout << "Node " << nReceiver << ": POS: x=" << pos.x << ", y=" << pos.y << std::endl;
+  /*cas 80211p*/
+        if (techno==1){
+                Ptr<MobilityModel> mob80211p = m_nodeContainer80211p.Get(nReceiver)->GetObject<MobilityModel>();
+                Vector pos80211p = mob80211p->GetPosition ();
+                //std::cout << "Node " << nReceiver << ": POS: x=" << pos.x << ", y=" << pos.y << std::endl;
 
-  Ptr<MobilityModel> mob1 = m_nodeContainer80211p.Get(nEmitter)->GetObject<MobilityModel>();
-  //Ptr<MobilityModel> mob1Wave = m_nodeContainerWave.Get(nEmitter)->GetObject<MobilityModel>();
-  Vector pos1 = mob1->GetPosition ();
-  //std::cout << "Node " << nEmitter << ": POS: x=" << pos1.x << ", y=" << pos1.y << std::endl;
-  double distance = sqrt((pos.x - pos1.x)*(pos.x - pos1.x)+(pos.y - pos1.y)*(pos.y - pos1.y)+(pos.z - pos1.z)*(pos.z - pos1.z));
+                Ptr<MobilityModel> mob180211p = m_nodeContainer80211p.Get(nEmitter)->GetObject<MobilityModel>();
+                Vector pos180211p = mob180211p->GetPosition ();
+                //std::cout << "Node " << nEmitter << ": POS: x=" << pos1.x << ", y=" << pos1.y << std::endl;
+                double distance80211p = sqrt((pos80211p.x - pos180211p.x)*(pos80211p.x - pos180211p.x)+
+                        (pos80211p.y - pos180211p.y)*(pos80211p.y - pos180211p.y)+
+                        (pos80211p.z - pos180211p.z)*(pos80211p.z - pos180211p.z));
 
   // ----------------------------------------------------------------------------
   // Display information about sending => does not work for tag to be checked
-  double speed = mob1->GetRelativeSpeed (mob) ;
+                double speed80211p = mob180211p->GetRelativeSpeed (mob80211p) ;
   
-  NS_LOG_UNCOND ("+AtApp " << Simulator::Now().GetSeconds()
+                NS_LOG_UNCOND ("+AtApp " << Simulator::Now().GetSeconds()
                  << " s packet " << packet->GetUid()
                  << " send from node " << nEmitter << " to " << nReceiver
-                 << " dist: " << distance
-                 << " relSpeed: " << speed
+                 << " dist: " << distance80211p
+                 << " relSpeed: " << speed80211p
                  << " txSizeNet: " << pktSize
+                 << " techno : " << techno
                  );
+        }
+        if (techno==3)
+        {       
+                  Ptr<MobilityModel> mobWave = m_nodeContainerWave.Get(nReceiver)->GetObject<MobilityModel>();
+                Vector posWave = mobWave->GetPosition ();
+                //std::cout << "Node " << nReceiver << ": POS: x=" << pos.x << ", y=" << pos.y << std::endl;
+                 Ptr<MobilityModel> mob1Wave = m_nodeContainerWave.Get(nEmitter)->GetObject<MobilityModel>();
+                Vector pos1Wave = mob1Wave->GetPosition ();
+                //std::cout << "Node " << nEmitter << ": POS: x=" << pos1.x << ", y=" << pos1.y << std::endl;
+                double distanceWave = sqrt((posWave.x - pos1Wave.x)*(posWave.x - pos1Wave.x)+
+                        (posWave.y - pos1Wave.y)*(posWave.y - pos1Wave.y)+
+                        (posWave.z - pos1Wave.z)*(posWave.z - pos1Wave.z));
 
+  // ----------------------------------------------------------------------------
+  // Display information about sending => does not work for tag to be checked
+                double speedWave = mob1Wave->GetRelativeSpeed (mobWave) ;
+                NS_LOG_UNCOND ("+AtApp " << Simulator::Now().GetSeconds()
+                 << " s packet " << packet->GetUid()
+                 << " send from node " << nEmitter << " to " << nReceiver
+                 << " dist: " << distanceWave
+                 << " relSpeed: " << speedWave
+                 << " txSizeNet: " << pktSize
+                 << " techno : " << techno
+                 );
+               
+        }
+
+                 compteurMessagesEmis++;
   // -----------------------------------------------------------------------------
   // Adding tag
   MyTag tag;
@@ -458,7 +948,7 @@ static void GenerateTraffic80211p (uint32_t nReceiver, uint32_t nEmitter, Ptr<So
   packet->AddPacketTag (tag);
 
   // -------------------------------------------------------
-  // Send the packet
+  // Send the packet ICI a modifier pour qui envoie avec quelle techno
   socket->Send (packet);
 
   // -------------------------------------------------------
@@ -466,74 +956,25 @@ static void GenerateTraffic80211p (uint32_t nReceiver, uint32_t nEmitter, Ptr<So
   // Adding new random variable
   //double offset = myRandom->GetValue(pktInterval/100 - pktInterval, pktInterval - pktInterval/100) ;
   
-  if (Simulator::Now().GetSeconds() < m_stopSendTime)  {
-    double offset = 0 ;
-    Simulator::Schedule (Seconds(pktInterval + offset), &GenerateTraffic80211p, nReceiver, nEmitter, socket, pktSize, pktInterval);
+  
+  
+  //RAT algo
+  if (testC1(nEmitter, techno, 3) && testC2(nEmitter,  3) && testC3() )
+  {
+        switchTechno(nEmitter, techno, 3) ;
+  
   }
-}
-
-static void GenerateTrafficWave (uint32_t nReceiver, uint32_t nEmitter, Ptr<Socket> socket, uint32_t pktSize, double pktInterval ) {
-
-  const uint8_t buffer[pktSize+3] = {1,2,3} ;
-  
-  // -------------------------------------------------------
-  // Packet to be sent
-  Ptr<Packet> packet = Create<Packet> (buffer,pktSize);
-  
-  PacketInformation packetInfo = PacketInformation(Simulator::Now().GetSeconds()) ;
-  s_appPacketInformation.insert(std::pair<uint64_t, PacketInformation>(packet->GetUid(), packetInfo)) ;
-  
-  std::pair<uint32_t, uint32_t> pairER = std::make_pair(nEmitter, nReceiver) ;
-  std::map<std::pair<uint32_t, uint32_t>, EmitterReceiver>::iterator itRes = s_emitterReceiverResult.find(pairER) ;
-  
-  if (itRes != s_emitterReceiverResult.end()) {
-    itRes->second.MessageSent() ;
-  }
-  
-  Ptr<MobilityModel> mob = m_nodeContainerWave.Get(nReceiver)->GetObject<MobilityModel>();
-  //Ptr<MobilityModel> mob80211p = m_nodeContainer80211p.Get(nReceiver)->GetObject<MobilityModel>();
-  Vector pos = mob->GetPosition ();
-  //std::cout << "Node " << nReceiver << ": POS: x=" << pos.x << ", y=" << pos.y << std::endl;
-
-  Ptr<MobilityModel> mob1 = m_nodeContainerWave.Get(nEmitter)->GetObject<MobilityModel>();
-  //Ptr<MobilityModel> mob180211p = m_nodeContainer80211p.Get(nEmitter)->GetObject<MobilityModel>();
-  Vector pos1 = mob1->GetPosition ();
-  //std::cout << "Node " << nEmitter << ": POS: x=" << pos1.x << ", y=" << pos1.y << std::endl;
-  double distance = sqrt((pos.x - pos1.x)*(pos.x - pos1.x)+(pos.y - pos1.y)*(pos.y - pos1.y)+(pos.z - pos1.z)*(pos.z - pos1.z));
-
-  // ----------------------------------------------------------------------------
-  // Display information about sending => does not work for tag to be checked
-  double speed = mob1->GetRelativeSpeed (mob) ;
-  
-  NS_LOG_UNCOND ("+AtApp " << Simulator::Now().GetSeconds()
-                 << " s packet " << packet->GetUid()
-                 << " send from node " << nEmitter << " to " << nReceiver
-                 << " dist: " << distance
-                 << " relSpeed: " << speed
-                 << " txSizeNet: " << pktSize
-                 );
-
-  // -----------------------------------------------------------------------------
-  // Adding tag
-  MyTag tag;
-  tag.SetSNode(nEmitter) ;
-  tag.SetRNode(nReceiver) ;
-  packet->AddPacketTag (tag);
-
-  // -------------------------------------------------------
-  // Send the packet
-  socket->Send (packet);
-
-  // -------------------------------------------------------
-  // Schedule next packet
-  // Adding new random variable
-  //double offset = myRandom->GetValue(pktInterval/100 - pktInterval, pktInterval - pktInterval/100) ;
   
   if (Simulator::Now().GetSeconds() < m_stopSendTime)  {
     double offset = 0 ;
-    Simulator::Schedule (Seconds(pktInterval + offset), &GenerateTrafficWave, nReceiver, nEmitter, socket, pktSize, pktInterval);
+    Simulator::Schedule (Seconds(pktInterval + offset), 
+           &GenerateTraffic, nReceiver, nEmitter, techno, socket, pktSize, pktInterval);
   }
 }
+
+
+
+
 
 /** Socket application
  * \author Benoit Hilt
@@ -566,7 +1007,10 @@ void ReceivePacket (Ptr<Socket> socket) {
                      << " txSizeNet: " << packet->GetSize()
                      );
     }
+    
+    compteurMessagesRecus++;
   }
+  
 }
 
 
@@ -579,7 +1023,8 @@ bool CreateNS2Nodes() {
   m_ns2Helper = new Ns2MobilityHelper(m_scenarioFileName) ;
   m_nodeContainer80211p.Create (m_nNodes) ;
   m_nodeContainerWave.Create (m_nNodes) ;
-  m_ns2Helper->Install() ; //m_nodeContainer.Begin(), m_nodeContainer().End) ;
+  m_nodeContainer80211b.Create (m_nNodes) ;
+  m_ns2Helper->Install() ; //m_nodeConta1iner.Begin(), m_nodeContainer().End) ;
 
   return true ;
 }
@@ -598,7 +1043,7 @@ double calculateLineOfSightDoppler(double speed) {
  * Yans Wifi installation
  * see https://svn.ensisa.uha.fr/redmine/projects/vanet-ns3/wiki/Configurations_Specifiques
  */
-void InstallYansWifi() {
+void InstallYansWifi80211b() {
 
      if (m_lossModel == 1)
      {
@@ -624,15 +1069,9 @@ void InstallYansWifi() {
      }
  
    // frequency
-   double freq = 0.0;
-   if ((m_80211mode == 1) || (m_80211mode == 3)) {
-       // 802.11p 5.9 GHz
-       freq = 5.9e9;
-   }
-   else {
-     // 802.11b 2.4 GHz
-     freq = 2.4e9;
-   }
+      //  802.11b 2.4 GHz
+   double  freq = 2.4e9;
+   
  
    // Setup propagation models
    YansWifiChannelHelper wifiChannel;
@@ -710,15 +1149,8 @@ void InstallYansWifi() {
  
    // Setup net devices
  
-   if (m_80211mode == 3) {
-       m_netDeviceContainer80211p = waveHelper.Install (wavePhy, waveMac, m_nodeContainer80211p) ;
-   }
-   else if (m_80211mode == 1) {
-       m_netDeviceContainer80211p = wifi80211p.Install (wifiPhy, wifi80211pMac, m_nodeContainer80211p) ;
-     }
-   else {
-       m_netDeviceContainer80211p = wifi.Install (wifiPhy, wifiMac, m_nodeContainer80211p) ;
-     }
+       m_netDeviceContainer80211b = wifi.Install (wifiPhy, wifiMac, m_nodeContainer80211b) ;
+     
  
    if (m_asciiTrace != 0) {
        std::ostringstream logFileName ;
@@ -738,104 +1170,10 @@ void InstallYansWifi() {
    }
 }
 
-void InstallYansWave() {
-
-     if (m_lossModel == 1)
-     {
-       m_lossModelName = "ns3::FriisPropagationLossModel";
-     }
-   else if (m_lossModel == 2)
-     {
-       m_lossModelName = "ns3::ItuR1411LosPropagationLossModel";
-     }
-   else if (m_lossModel == 3)
-     {
-       m_lossModelName = "ns3::TwoRayGroundPropagationLossModel";
-     }
-   else if (m_lossModel == 4)
-     {
-       m_lossModelName = "ns3::LogDistancePropagationLossModel";
-     }
-   else
-     {
-       // Unsupported propagation loss model.
-       // Treating as ERROR
-       NS_LOG_ERROR ("Invalid propagation loss model specified.  Values must be [1-4], where 1=Friis;2=ItuR1411Los;3=TwoRayGround;4=LogDistance");
-     }
- 
-   // frequency
-   double freq = 5.9e9;
- 
-   // Setup propagation models
-   YansWifiChannelHelper wifiChannel;
-   wifiChannel.SetPropagationDelay ("ns3::ConstantSpeedPropagationDelayModel");
-   if (m_lossModel == 3)
-     {
-       // two-ray requires antenna height (else defaults to Friss)
-       wifiChannel.AddPropagationLoss (m_lossModelName, "Frequency", DoubleValue (freq), "HeightAboveZ", DoubleValue (1.5));
-     }
-   else
-     {
-       wifiChannel.AddPropagationLoss (m_lossModelName, "Frequency", DoubleValue (freq));
-     }
- 
-   // Propagation loss models are additive.
-   if (m_fading != 0)
-     {
-       // if no obstacle model, then use Nakagami fading if requested
-       wifiChannel.AddPropagationLoss ("ns3::NakagamiPropagationLossModel");
-     }
- 
-   // the channel
-   Ptr<YansWifiChannel> channel = wifiChannel.Create ();
- 
-   YansWavePhyHelper wavePhy =  YansWavePhyHelper::Default ();
-   wavePhy.SetChannel (channel);
-   wavePhy.SetPcapDataLinkType (WifiPhyHelper::DLT_IEEE802_11);
- 
-   // Setup WAVE PHY and MAC
-   WaveHelper waveHelper = WaveHelper::Default ();
-   if (m_verbose)
-     {
-       waveHelper.EnableLogComponents ();
-     }
- 
-   // Setup WAVE-PHY stuff
-   waveHelper.SetRemoteStationManager ("ns3::ConstantRateWifiManager",
-                                       "DataMode",StringValue (m_phyMode),
-                                       "ControlMode",StringValue (m_phyMode));
- 
-   // Set Tx Power
-   wavePhy.Set ("TxPowerStart",DoubleValue (m_txPower));
-   wavePhy.Set ("TxPowerEnd", DoubleValue (m_txPower));
- 
-   // Add an upper mac and disable rate control
-   QosWaveMacHelper waveMac = QosWaveMacHelper::Default ();
- 
-   // Setup net devices
- 
-    m_netDeviceContainerWave= waveHelper.Install (wavePhy, waveMac, m_nodeContainerWave) ;
-  
-   if (m_asciiTrace != 0) {
-       std::ostringstream logFileName ;
-       logFileName << m_outputdir.c_str() << "trFile" << ".tr" ;
-       AsciiTraceHelper ascii;
-       Ptr<OutputStreamWrapper> osw = ascii.CreateFileStream ( (logFileName.str().c_str()) );
-       wavePhy.EnableAsciiAll (osw);
-     }
-
-   if (m_pcap != 0) {
-     std::ostringstream fileName ;
-     fileName << m_outputdir << "vanet-routing-compare-pcap" ;
-     std::cout << fileName.str() << std::endl ;
-     wavePhy.EnablePcapAll (fileName.str().c_str()) ;
-   }
-}
-
-
-
+/*creation de yansWifi autorisant plusieurs technologies de communication*/
 
 void InstallYansWifi80211p() {
+
      if (m_lossModel == 1)
      {
        m_lossModelName = "ns3::FriisPropagationLossModel";
@@ -861,7 +1199,7 @@ void InstallYansWifi80211p() {
  
    // frequency
    double freq = 5.9e9;
-
+ 
    // Setup propagation models
    YansWifiChannelHelper wifiChannel;
    wifiChannel.SetPropagationDelay ("ns3::ConstantSpeedPropagationDelayModel");
@@ -891,28 +1229,46 @@ void InstallYansWifi80211p() {
    // ns-3 supports generate a pcap trace
    wifiPhy.SetPcapDataLinkType (WifiPhyHelper::DLT_IEEE802_11);
  
-   
+   YansWavePhyHelper wavePhy =  YansWavePhyHelper::Default ();
+   wavePhy.SetChannel (channel);
+   wavePhy.SetPcapDataLinkType (WifiPhyHelper::DLT_IEEE802_11);
+ 
    // Setup WAVE PHY and MAC
    NqosWaveMacHelper wifi80211pMac = NqosWaveMacHelper::Default ();
+   WaveHelper waveHelper = WaveHelper::Default ();
    Wifi80211pHelper wifi80211p = Wifi80211pHelper::Default ();
    if (m_verbose)
      {
        wifi80211p.EnableLogComponents ();      // Turn on all Wifi 802.11p logging
        // likewise, turn on WAVE PHY logging
+       waveHelper.EnableLogComponents ();
      }
  
-   
-   
+   WifiHelper wifi;
+ 
+   // Setup 802.11b stuff
+   wifi.SetStandard (WIFI_PHY_STANDARD_80211b);
+ 
+   wifi.SetRemoteStationManager ("ns3::ConstantRateWifiManager",
+                                 "DataMode",StringValue (m_phyMode),
+                                 "ControlMode",StringValue (m_phyMode));
+ 
    // Setup 802.11p stuff
    wifi80211p.SetRemoteStationManager ("ns3::ConstantRateWifiManager",
                                        "DataMode",StringValue (m_phyMode),
                                        "ControlMode",StringValue (m_phyMode));
  
-   
+   // Setup WAVE-PHY stuff
+   waveHelper.SetRemoteStationManager ("ns3::ConstantRateWifiManager",
+                                       "DataMode",StringValue (m_phyMode),
+                                       "ControlMode",StringValue (m_phyMode));
+ 
    // Set Tx Power
    wifiPhy.Set ("TxPowerStart",DoubleValue (m_txPower));
    wifiPhy.Set ("TxPowerEnd", DoubleValue (m_txPower));
-   
+   wavePhy.Set ("TxPowerStart",DoubleValue (m_txPower));
+   wavePhy.Set ("TxPowerEnd", DoubleValue (m_txPower));
+ 
    // Add an upper mac and disable rate control
    WifiMacHelper wifiMac;
    wifiMac.SetType ("ns3::AdhocWifiMac");
@@ -920,7 +1276,15 @@ void InstallYansWifi80211p() {
  
    // Setup net devices
  
+ //  if (m_80211mode == 3) {
+       //m_netDeviceContainerWave = waveHelper.Install (wavePhy, waveMac, m_nodeContainerWave) ;
+ //  }
+ //  else if (m_80211mode == 1) {
        m_netDeviceContainer80211p = wifi80211p.Install (wifiPhy, wifi80211pMac, m_nodeContainer80211p) ;
+  //   }
+  // else {
+   //    m_netDeviceContainer = wifi.Install (wifiPhy, wifiMac, m_nodeContainer) ;
+ //    }
  
    if (m_asciiTrace != 0) {
        std::ostringstream logFileName ;
@@ -928,6 +1292,7 @@ void InstallYansWifi80211p() {
        AsciiTraceHelper ascii;
        Ptr<OutputStreamWrapper> osw = ascii.CreateFileStream ( (logFileName.str().c_str()) );
        wifiPhy.EnableAsciiAll (osw);
+       wavePhy.EnableAsciiAll (osw);
      }
 
    if (m_pcap != 0) {
@@ -935,10 +1300,146 @@ void InstallYansWifi80211p() {
      fileName << m_outputdir << "vanet-routing-compare-pcap" ;
      std::cout << fileName.str() << std::endl ;
      wifiPhy.EnablePcapAll (fileName.str().c_str()) ;
-   }   
+     wavePhy.EnablePcapAll (fileName.str().c_str()) ;
+   }
+        cout<< "D* : Protocoles wave et 80211p installes"<< endl;
+
 }
 
 
+void InstallYansWifiWave() {
+
+     if (m_lossModel == 1)
+     {
+       m_lossModelName = "ns3::FriisPropagationLossModel";
+     }
+   else if (m_lossModel == 2)
+     {
+       m_lossModelName = "ns3::ItuR1411LosPropagationLossModel";
+     }
+   else if (m_lossModel == 3)
+     {
+       m_lossModelName = "ns3::TwoRayGroundPropagationLossModel";
+     }
+   else if (m_lossModel == 4)
+     {
+       m_lossModelName = "ns3::LogDistancePropagationLossModel";
+     }
+   else
+     {
+       // Unsupported propagation loss model.
+       // Treating as ERROR
+       NS_LOG_ERROR ("Invalid propagation loss model specified.  Values must be [1-4], where 1=Friis;2=ItuR1411Los;3=TwoRayGround;4=LogDistance");
+     }
+ 
+   // frequency
+   double freq = 5.9e9;
+ 
+   // Setup propagation models
+   YansWifiChannelHelper wifiChannel;
+   wifiChannel.SetPropagationDelay ("ns3::ConstantSpeedPropagationDelayModel");
+   if (m_lossModel == 3)
+     {
+       // two-ray requires antenna height (else defaults to Friss)
+       wifiChannel.AddPropagationLoss (m_lossModelName, "Frequency", DoubleValue (freq), "HeightAboveZ", DoubleValue (1.5));
+     }
+   else
+     {
+       wifiChannel.AddPropagationLoss (m_lossModelName, "Frequency", DoubleValue (freq));
+     }
+ 
+   // Propagation loss models are additive.
+   if (m_fading != 0)
+     {
+       // if no obstacle model, then use Nakagami fading if requested
+       wifiChannel.AddPropagationLoss ("ns3::NakagamiPropagationLossModel");
+     }
+ 
+   // the channel
+   Ptr<YansWifiChannel> channel = wifiChannel.Create ();
+ 
+   // The below set of helpers will help us to put together the wifi NICs we want
+   YansWifiPhyHelper wifiPhy =  YansWifiPhyHelper::Default ();
+   wifiPhy.SetChannel (channel);
+   // ns-3 supports generate a pcap trace
+   wifiPhy.SetPcapDataLinkType (WifiPhyHelper::DLT_IEEE802_11);
+ 
+   YansWavePhyHelper wavePhy =  YansWavePhyHelper::Default ();
+   wavePhy.SetChannel (channel);
+   wavePhy.SetPcapDataLinkType (WifiPhyHelper::DLT_IEEE802_11);
+ 
+   // Setup WAVE PHY and MAC
+   NqosWaveMacHelper wifi80211pMac = NqosWaveMacHelper::Default ();
+   WaveHelper waveHelper = WaveHelper::Default ();
+   Wifi80211pHelper wifi80211p = Wifi80211pHelper::Default ();
+   if (m_verbose)
+     {
+       wifi80211p.EnableLogComponents ();      // Turn on all Wifi 802.11p logging
+       // likewise, turn on WAVE PHY logging
+       waveHelper.EnableLogComponents ();
+     }  
+ 
+   WifiHelper wifi;
+ 
+   // Setup 802.11b stuff
+   wifi.SetStandard (WIFI_PHY_STANDARD_80211b);
+ 
+   wifi.SetRemoteStationManager ("ns3::ConstantRateWifiManager",
+                                 "DataMode",StringValue (m_phyMode),
+                                 "ControlMode",StringValue (m_phyMode));
+ 
+   // Setup 802.11p stuff
+   wifi80211p.SetRemoteStationManager ("ns3::ConstantRateWifiManager",
+                                       "DataMode",StringValue (m_phyMode),
+                                       "ControlMode",StringValue (m_phyMode));
+ 
+   // Setup WAVE-PHY stuff
+   waveHelper.SetRemoteStationManager ("ns3::ConstantRateWifiManager",
+                                       "DataMode",StringValue (m_phyMode),
+                                       "ControlMode",StringValue (m_phyMode));
+ 
+   // Set Tx Power
+   wifiPhy.Set ("TxPowerStart",DoubleValue (m_txPower));
+   wifiPhy.Set ("TxPowerEnd", DoubleValue (m_txPower));
+   wavePhy.Set ("TxPowerStart",DoubleValue (m_txPower));
+   wavePhy.Set ("TxPowerEnd", DoubleValue (m_txPower));
+ 
+   // Add an upper mac and disable rate control
+   WifiMacHelper wifiMac;
+   wifiMac.SetType ("ns3::AdhocWifiMac");
+   QosWaveMacHelper waveMac = QosWaveMacHelper::Default ();
+ 
+   // Setup net devices
+ 
+ //  if (m_80211mode == 3) {
+       m_netDeviceContainerWave = waveHelper.Install (wavePhy, waveMac, m_nodeContainerWave) ;
+ //  }
+ //  else if (m_80211mode == 1) {
+       //m_netDeviceContainer80211p = wifi80211p.Install (wifiPhy, wifi80211pMac, m_nodeContainer80211p) ;
+  //   }
+  // else {
+   //    m_netDeviceContainer = wifi.Install (wifiPhy, wifiMac, m_nodeContainer) ;
+ //    }
+ 
+   if (m_asciiTrace != 0) {
+       std::ostringstream logFileName ;
+       logFileName << m_outputdir.c_str() << "trFile" << ".tr" ;
+       AsciiTraceHelper ascii;
+       Ptr<OutputStreamWrapper> osw = ascii.CreateFileStream ( (logFileName.str().c_str()) );
+       wifiPhy.EnableAsciiAll (osw);
+       wavePhy.EnableAsciiAll (osw);
+     }
+
+   if (m_pcap != 0) {
+     std::ostringstream fileName ;
+     fileName << m_outputdir << "vanet-routing-compare-pcap" ;
+     std::cout << fileName.str() << std::endl ;
+     wifiPhy.EnablePcapAll (fileName.str().c_str()) ;
+     wavePhy.EnablePcapAll (fileName.str().c_str()) ;
+   }
+        cout<< "D* : Protocoles wave et 80211p installes"<< endl;
+
+}
 
 /**
  * No protocol installed for internet stack
@@ -946,13 +1447,29 @@ void InstallYansWifi80211p() {
  */
 void InstallNoProtocol () {
 
-  InternetStackHelper stack;
-  stack.Install (m_nodeContainer80211p);
-  stack.Install (m_nodeContainerWave);
-  Ipv4AddressHelper address;
-  address.SetBase ("10.0.0.0", "255.0.0.0");
-  m_ipv4InterfaceContainer80211p = address.Assign (m_netDeviceContainer80211p);
-  m_ipv4InterfaceContainerWave = address.Assign (m_netDeviceContainerWave);
+  
+  InternetStackHelper stackWave;
+  stackWave.Install (m_nodeContainerWave);
+  
+  Ipv4AddressHelper addressWave;
+  addressWave.SetBase ("11.0.0.0", "255.0.0.0");
+  m_ipv4InterfaceContainerWave = addressWave.Assign (m_netDeviceContainerWave);
+
+  InternetStackHelper stack80211p;
+  stack80211p.Install (m_nodeContainer80211p);
+  
+  Ipv4AddressHelper address80211p;
+  address80211p.SetBase ("10.0.0.0", "255.0.0.0");
+  m_ipv4InterfaceContainer80211p = address80211p.Assign (m_netDeviceContainer80211p);
+  
+  
+  InternetStackHelper stack80211b;
+  stack80211b.Install (m_nodeContainer80211b);
+  
+  Ipv4AddressHelper address80211b;
+  address80211b.SetBase ("10.0.0.0", "255.0.0.0");
+  m_ipv4InterfaceContainer80211b = address80211b.Assign (m_netDeviceContainer80211b);
+  
 }
 
 /**
@@ -960,7 +1477,7 @@ void InstallNoProtocol () {
  * \return IP address
  * \param index index of the node in NodeContainer
  */
-Ipv4InterfaceAddress GetIpv4Address(uint32_t index) {
+Ipv4InterfaceAddress GetIpv4Address80211p(uint32_t index) {
 
   for (uint32_t indexDevice = 0 ; indexDevice < m_netDeviceContainer80211p.GetN() ; indexDevice ++) {
 
@@ -989,6 +1506,67 @@ Ipv4InterfaceAddress GetIpv4Address(uint32_t index) {
   return Ipv4InterfaceAddress() ;
 }
 
+Ipv4InterfaceAddress GetIpv4Address80211b(uint32_t index) {
+
+  for (uint32_t indexDevice = 0 ; indexDevice < m_netDeviceContainer80211b.GetN() ; indexDevice ++) {
+
+    Ptr<NetDevice> netDevice=m_netDeviceContainer80211b.Get(indexDevice);
+    Ptr<Node> node=netDevice->GetNode ();
+    if (node != NULL) {
+      Ptr<Ipv4> ipv4=node->GetObject<Ipv4> ();
+
+      int32_t interface = ipv4->GetInterfaceForDevice (netDevice);
+      uint32_t nb = ipv4->GetNAddresses(interface);
+
+      for(uint32_t indexInterface = 0 ;  indexInterface < nb ; indexInterface ++) {
+        Ipv4InterfaceAddress addr = ipv4->GetAddress(interface, indexInterface);
+
+        if (index == node->GetId() ) {
+          //std::cerr << "FD::Found the correct node " << node->GetId() << " has address " << addr.GetLocal() << " Mask " << addr.GetMask() << " Broadcast "<< addr.GetBroadcast() << std::endl;
+          return addr ;
+        }
+      }
+    }
+    else {
+      std::cerr << "FD:Node is null" << std::endl ;
+    }
+  }
+
+  return Ipv4InterfaceAddress() ;
+}
+
+
+Ipv4InterfaceAddress GetIpv4AddressWave(uint32_t index) {
+
+  for (uint32_t indexDevice = 0 ; indexDevice < m_netDeviceContainerWave.GetN() ; indexDevice ++) {
+
+    Ptr<NetDevice> netDevice=m_netDeviceContainerWave.Get(indexDevice);
+    Ptr<Node> node=netDevice->GetNode ();
+    if (node != NULL) {
+      Ptr<Ipv4> ipv4=node->GetObject<Ipv4> ();
+
+      int32_t interface = ipv4->GetInterfaceForDevice (netDevice);
+      uint32_t nb = ipv4->GetNAddresses(interface);
+
+      for(uint32_t indexInterface = 0 ;  indexInterface < nb ; indexInterface ++) {
+        Ipv4InterfaceAddress addr = ipv4->GetAddress(interface, indexInterface);
+
+cout<< "coucou"<<endl;
+
+        if (index == node->GetId() ) {
+          std::cerr << "FD::Found the correct node " << node->GetId() << " has address " << addr.GetLocal() << " Mask " << addr.GetMask() << " Broadcast "<< addr.GetBroadcast() << std::endl;
+          return addr ;
+        }
+      }
+    }
+    else {
+      std::cerr << "FD:Node is null" << std::endl ;
+    }
+  }
+
+  return Ipv4InterfaceAddress() ;
+}
+
 /**
  * Install socket for node communication
  */
@@ -1004,98 +1582,122 @@ void InstallSocketApplications() {
   // Configuration of the applications
   // UdpClient -> UdpServer
   int i = 1 ;
-
   for (std::vector<EmitterReceiver>::iterator it = m_vlinks.begin() ; it != m_vlinks.end() ; it ++, i++) {
-
-    if (it->GetTechno()==1)//80211p
+    if (it->getIsTechnoUsed ())
     {
+    NS_LOG_UNCOND("Link " << i << ": node " << it->GetEmitter() << " send information to " << it->GetReceiver()<< " with techno "<< it->GetTechnoUsed().GetNumber()) ;
 
-      NS_LOG_UNCOND("Link " << i << ": node " << it->GetEmitter() << " send information to " << it->GetReceiver()) ;
-
-      uint32_t nNodeServer = it->GetReceiver() ;
-      uint32_t nNodeClient = it->GetEmitter() ;
-      uint32_t packetSize = it->GetPacketSize() ;
-    
+    uint32_t nNodeServer = it->GetReceiver() ;
+    uint32_t nNodeClient = it->GetEmitter() ;
+    uint32_t packetSize = it->GetPacketSize() ;
     // Configure the server
-      Ipv4InterfaceAddress destAddress = GetIpv4Address(nNodeServer) ;
-      Ptr<Socket> recvSink = Socket::CreateSocket (m_nodeContainer80211p.Get (nNodeServer), tid);
-      InetSocketAddress local = InetSocketAddress (Ipv4Address::GetAny(), port);
-      recvSink->Bind (local);
-      recvSink->SetRecvCallback (MakeCallback (&ReceivePacket));
 
-      cout<<"serveur 80211p configuré avec :"<<m_nodeContainer80211p.Get (nNodeServer)->GetId()<< " correspondant à "<<nNodeServer <<endl;
-    // Configure the client
-      Ptr<Socket> source = Socket::CreateSocket ( m_nodeContainer80211p.Get(nNodeClient), tid);
-      InetSocketAddress remote = InetSocketAddress (destAddress.GetLocal(), port);
-      source->SetAllowBroadcast (true);
-      source->Bind();
-      source->Connect (remote);  // Used to set the destination address of the outgoing packets
-      cout<<"client 80211p configuré avec :"<<m_nodeContainer80211p.Get (nNodeClient)->GetId()<< " correspondant à "<<nNodeClient <<endl;
-
-    // Display
-      m_nNodesEmitter = m_vlinks.size() ;
-      double offset = 0.001*(i-1) ; //* nNodeClient ;
-    
-      Ipv4InterfaceAddress srcAddress = GetIpv4Address(nNodeClient) ;
-
-      cout<<"adresse source de :"<<nNodeClient<<endl;
-
-      NS_LOG_UNCOND("\tClient " << srcAddress.GetLocal() << " (" << nNodeClient << ") sends information to " << destAddress.GetLocal() << " (" << nNodeServer << ")" << " (start time = " << Seconds(m_startSendTime + offset).GetSeconds() << " s)") ;
-     
-      if ( it->GetUsed())
-      Simulator::Schedule (Seconds(m_startSendTime + offset), &GenerateTraffic80211p, nNodeServer, nNodeClient, source, packetSize, m_packetInterval);
-     
+    Ipv4InterfaceAddress destAddress ;
+    if (it->GetTechnoUsed().GetNumber()==1)
+    {
+        destAddress = GetIpv4Address80211p(nNodeServer) ;
     }
-    else//wave
+    if (it->GetTechnoUsed().GetNumber()==2)
     {
-      NS_LOG_UNCOND("Link " << i << ": node " << it->GetEmitter() << " send information to " << it->GetReceiver()) ;
+        destAddress = GetIpv4Address80211b(nNodeServer) ;
+    }
+    if (it->GetTechnoUsed().GetNumber()==3)
+    {
+        destAddress = GetIpv4AddressWave(nNodeServer) ;
+    }
 
-      uint32_t nNodeServer = it->GetReceiver()-2 ;
-      uint32_t nNodeClient = it->GetEmitter()-2 ;
-      uint32_t packetSize = it->GetPacketSize() ;
-    // Configure the server
-      Ipv4InterfaceAddress destAddress = GetIpv4Address(nNodeServer+2) ;
-      Ptr<Socket> recvSink = Socket::CreateSocket (m_nodeContainerWave.Get (nNodeServer), tid);
-      InetSocketAddress local = InetSocketAddress (Ipv4Address::GetAny(), port);
-      recvSink->Bind (local);
-      recvSink->SetRecvCallback (MakeCallback (&ReceivePacket));
-      cout<<"serveur 80211p configuré avec :"<<m_nodeContainerWave.Get (nNodeServer)->GetId()<< " correspondant à "<<nNodeServer <<endl;
+    Ptr<Socket> recvSink ;
 
+    if (it->GetTechnoUsed().GetNumber()==1)
+    {
+        recvSink = Socket::CreateSocket (m_nodeContainer80211p.Get (nNodeServer), tid);
+    }
+    if (it->GetTechnoUsed().GetNumber()==2)
+    {
+        recvSink = Socket::CreateSocket (m_nodeContainer80211b.Get (nNodeServer), tid);
+    }
+    if (it->GetTechnoUsed().GetNumber()==3)
+    {
+        recvSink = Socket::CreateSocket (m_nodeContainerWave.Get (nNodeServer), tid);
+    } 
+
+    InetSocketAddress local = InetSocketAddress (Ipv4Address::GetAny(), port);
+    recvSink->Bind (local);
+    recvSink->SetRecvCallback (MakeCallback (&ReceivePacket));
+        
     // Configure the client
+    Ptr<Socket> source ;
+    if (it->GetTechnoUsed().GetNumber()==1)
+    {
+        source = Socket::CreateSocket ( m_nodeContainer80211p.Get(nNodeClient), tid);
+    }
+    if (it->GetTechnoUsed().GetNumber()==2)
+    {
+        source = Socket::CreateSocket ( m_nodeContainer80211b.Get(nNodeClient), tid);
+    }
+    if (it->GetTechnoUsed().GetNumber()==3)
+    {
+        source = Socket::CreateSocket ( m_nodeContainerWave.Get(nNodeClient), tid);
+    }
+    InetSocketAddress remote = InetSocketAddress (destAddress.GetLocal(), port);
+    source->SetAllowBroadcast (true);
+    source->Bind();
+    source->Connect (remote);  // Used to set the destination address of the outgoing packets
 
-      Ptr<Socket> source = Socket::CreateSocket ( m_nodeContainerWave.Get(nNodeClient), tid);
-
-      InetSocketAddress remote = InetSocketAddress (destAddress.GetLocal(), port);
-
-      source->SetAllowBroadcast (true); 
-      source->Bind();
-      source->Connect (remote);  // Used to set the destination address of the outgoing packets
-
-
-      cout<<"client wave configuré avec :"<<m_nodeContainerWave.Get (nNodeClient)->GetId()<< " correspondant à "<<nNodeClient <<endl;
 
     // Display
-      m_nNodesEmitter = m_vlinks.size() ;
-      double offset = 0.001*(i-1) ; //* nNodeClient ;
-      Ipv4InterfaceAddress srcAddress = GetIpv4Address(nNodeClient+2) ;
+    m_nNodesEmitter = m_vlinks.size() ;
+    double offset = 0.001*(i-1) ; //* nNodeClient ;
+    
 
-      cout<<"adresse source de :"<<nNodeClient<<endl;
+    Ipv4InterfaceAddress srcAddress ;
+    if (it->GetTechnoUsed().GetNumber()==1)
+    {
+        srcAddress = GetIpv4Address80211p(nNodeClient) ;
+    }
+    if (it->GetTechnoUsed().GetNumber()==2)
+    {
+        srcAddress = GetIpv4Address80211b(nNodeClient) ;
+    }
+    if (it->GetTechnoUsed().GetNumber()==3)
+    {
+        srcAddress = GetIpv4AddressWave(nNodeClient) ;
+    }
+    //attention probleme de memoire
+        NS_LOG_UNCOND("\tClient " << srcAddress.GetLocal() << " (" << nNodeClient 
+        << ") sends information to " << destAddress.GetLocal() << " (" << nNodeServer << ")" 
+        << " (start time = " << Seconds(m_startSendTime + offset).GetSeconds() 
+        << " s) with techno "<<it->GetTechnoUsed().GetNumber() ) ;
 
-
-
-      NS_LOG_UNCOND("\tClient " << srcAddress.GetLocal() << " (" << nNodeClient << ") sends information to " << destAddress.GetLocal() << " (" << nNodeServer << ")" << " (start time = " << Seconds(m_startSendTime + offset).GetSeconds() << " s)") ;
-      if ( it->GetUsed())
-      Simulator::Schedule (Seconds(m_startSendTime + offset), &GenerateTrafficWave, nNodeServer, nNodeClient, source, packetSize, m_packetInterval);
-      
+        Simulator::Schedule (Seconds(m_startSendTime + offset), 
+        &GenerateTraffic, nNodeServer, nNodeClient,it->GetTechnoUsed().GetNumber(), source, packetSize, m_packetInterval);
     }
   }
 }
+
+
 
 
 /**
  * Les applications => depend of the traffic file name => DEFAULT -> RANDOM applications, NOT DEFAULT => take the filename and parse it
  */
 void InstallApplications () {
+
+    
+
+
+
+//Cretation des technologies de communication
+
+
+	//TechnoUsed (int number, double throughput, int nbUsed) 
+        TechnoUsed techno1= TechnoUsed(1, 6, 0);
+        TechnoUsed techno2= TechnoUsed(3, 6, 0);
+        TechnoUsed techno3= TechnoUsed(2, 6, 0);
+        uint32_t nbTechno1=0;
+        uint32_t nbTechno2=0;
+        uint32_t nbTechno3=0;
+        
 
   std::ifstream trafficFile ;
   trafficFile.open(m_trafficFileName.c_str()) ;
@@ -1122,43 +1724,105 @@ void InstallApplications () {
           }
           else {
             if (packetSize <= 0) packetSize = m_packetSize ;
-            m_vlinks.push_back(EmitterReceiver(iNodeEmit, iNodeRec, packetSize, 1, true)) ;
-            m_vlinks.push_back(EmitterReceiver(iNodeEmit+2, iNodeRec+2, packetSize, 3, false)) ;
+            m_vlinks.push_back(EmitterReceiver(iNodeEmit, iNodeRec, packetSize,techno1, true)) ;
+            nbTechno1++;
+            
+                //Installation de la 2nde technologie de communication
+            m_vlinks.push_back(EmitterReceiver(iNodeEmit, iNodeRec, packetSize,techno2, false)) ;
+                        //nbTechno2++;
+
+            m_vlinks.push_back(EmitterReceiver(iNodeEmit, iNodeRec, packetSize,techno3, false)) ;
+            //nbTechno3++;
           }
         }
       }
     }
 
     trafficFile.close();
-
-
   }
 
   // Add the emitter receiver from m_vlinks into map
   for (std::vector<EmitterReceiver>::iterator it = m_vlinks.begin() ; it != m_vlinks.end() ; it ++) {
     std::pair<uint32_t, uint32_t> pairER = std::make_pair(it->GetEmitter(), it->GetReceiver()) ;
+      it->setIsNodeElectedS1(false) ;
+      it->setIsNodeElectedS2(false) ;
+      it->setwS1(0) ;
+      it->setwS2(0) ;
+      if (it->GetTechnoUsed().GetNumber()==1)
+      {
+        it->GetTechnoUsed().SetnbUsed(nbTechno1);
+        
+      } 
+      if (it->GetTechnoUsed().GetNumber()==2)
+      {
+        it->GetTechnoUsed().SetnbUsed(nbTechno2);
+        
+      } 
+      if (it->GetTechnoUsed().GetNumber()==3)
+      {
+        it->GetTechnoUsed().SetnbUsed(nbTechno3);
+      } 
     s_emitterReceiverResult.insert(std::make_pair(pairER, *it)) ;
-     std::cout <<  pairER.first << " => " <<  pairER.second << '\n';
   }
+  
+  
+  /**Creation des tables**/
 
-  for (map<pair<uint32_t, uint32_t>, EmitterReceiver>::iterator it=s_emitterReceiverResult.begin(); it!=s_emitterReceiverResult.end(); ++it)
-  {
-    cout<<"("<< it->first.first << " => " << it->first.second<<") donne "
-     << "("<<it->second.GetEmitter()<<"=>" << it->second.GetReceiver()
-     << "), taille paquet " << it->second.GetPacketSize()
-     << ", avec techno "<< it->second.GetTechno()
-     <<" ( "<< it->second.GetUsed() <<")"
-     <<'\n';
+        /*Initialisation TabQ*/
+  for (std::vector<EmitterReceiver>::iterator i = m_vlinks.begin() ; i != m_vlinks.end() ; i ++) {
+        // Vector to store column elements 
+        vector<double> vq1; 
+        vector<double> vy1;
+        vector<double> vq2; 
+        vector<double> vy2; 
+        cout << " m_nNodes-1 : "<< m_nNodes-1<<endl;
+        for (int j = 0; j < (int)m_nNodes; j++) {
+         
+        if ((int)i->GetEmitter()==j)
+        {
+                vq1.push_back(-1);
+                vy1.push_back(-1);
+                vq2.push_back(-1);
+                vy2.push_back(-1);
+        }
+        else
+        {
+                vy1.push_back(1);
+                vy2.push_back(1);
+        if (m_nNodes<2)
+           {
+                vq1.push_back(1);
+                vq2.push_back(1); 
+           }
+        else
+           {
+                vq1.push_back(1/((int)m_nNodes-1));
+                vq2.push_back(1/((int)m_nNodes-1)); 
+           }
+        }
+         
+  
+        // Pushing back above 1D vector 
+        // to create the 2D vector 
+        vecQ1.push_back(vq1);         
+        vecY1.push_back(vy1);
+         
+         
+        vecQ2.push_back(vq2);         
+        vecY2.push_back(vy2); 
+         
+    } 
+  /****/
 
-  }
-   // cout<< it->first.first << " => " << it->second << '\n';
-   
+  /**Creation des tables**/
 
-   
-
-
+  
+        // Pushing back above 1D vector 
+        // to create the 2D vector 
+    } 
   InstallSocketApplications() ;
-
+  
+  
 }
 
 
@@ -1167,6 +1831,9 @@ void InstallApplications () {
 /* ********************************************************************************************* */
 /* ********************************************************************************************* */
 int main (int argc, char *argv[]) {
+        compteurMessagesRecus=0;
+        compteurMessagesEmis=0;
+        srand(time(NULL));
 
   CommandLine cmd;
   cmd.AddValue ("scenario", "Scenario file name",  m_scenarioFileName) ;
@@ -1197,42 +1864,59 @@ int main (int argc, char *argv[]) {
     }
   
   CreateNS2Nodes();
-  InstallYansWifi80211p();  
-  //InstallYansWave();
+  InstallYansWifi80211p();
+  //InstallYansWifiWave();
+  //InstallYansWifi80211b();
+        cout<< "D* : Suite des evenements"<< endl;
 
   InstallNoProtocol() ;
+        cout<< "D* : Installation des protocoles"<< endl;
+        
+        
+        
+        
   InstallApplications() ;
+  
+        
+    int sizeVector =m_vlinks.size();
+    // Inserting elements into vector 
+    cout << " sizeVector : "<< sizeVector<<endl;
+        
+    // Displaying the 2D vector 
+    for (int i = 0; i < (int)vecQ1.size(); i++) { 
+    cout<<"ER "<< i << " : ";
+        for (int j = 0; j < (int) m_nNodes; j++)
+        {
+                cout<< " : "<< vecQ1[i][j] << " ("<<j<<") | ";
+        } 
+             
+        cout << endl; 
+    } 
 
-  cout<<"RESUME--coucou"<<endl;
+cout<<"FIN"<<endl;
 
-
-  for (std::vector<EmitterReceiver>::iterator it = m_vlinks.begin() ; it != m_vlinks.end() ; it ++) {
-    cout<<it->GetEmitter()<< " vers "<< it->GetReceiver()<<" avec technologie "<< it->GetTechno()<<" et it correspondant"<<it->GetUsed() <<endl;
-  }
-
-  cout<<"m_nodeContainer80211p"<<endl;
-  NodeContainer::Iterator i;
-  for (i = m_nodeContainer80211p.Begin (); i != m_nodeContainer80211p.End (); ++i)
-  {
-
-    cout<<(*i)->GetId()<<" ";  // some Node method
-  }
-  cout<<endl;
-  for (i = m_nodeContainerWave.Begin (); i != m_nodeContainerWave.End (); ++i)
-  {
-
-    cout<<(*i)->GetId()<<" ";  // some Node method
-  }
-  cout<<endl;
+        cout<< "D* : Installation de la couche application"<< endl;
+  
   // -------------------------------------------------------------------------------------           
-  //std::ostringstream logFileNameAnim ;
-  //logFileNameAnim << m_outputdir.c_str() << "animation" << ".xml" ;
+  std::ostringstream logFileNameAnim ;
+  logFileNameAnim << m_outputdir.c_str() << "animation" << ".xml" ;
   //std::cout << "Opening file " << logFileNameAnim.str() << std::endl ;                             
-  //AnimationInterface anim (logFileNameAnim.str().c_str()); // Mandatory   
-
-  cout<<" debut"<<endl;  // some Node method
+  AnimationInterface anim (logFileNameAnim.str().c_str()); // Mandatory    
+  
+ 
   Simulator::Run ();
+
+        cout<< "D* : Fonctionnement ok"<< endl;
+  
   Simulator::Destroy ();
+
+
+cout<<" Messages recus "<<compteurMessagesRecus<<endl;
+cout<<" Messages émis "<<compteurMessagesEmis<<endl; 
+
+cout<<" Ratio "<<(double) compteurMessagesRecus/compteurMessagesEmis<<endl; 
+
+
 
 
   return 0;
