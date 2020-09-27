@@ -1,0 +1,6 @@
+Implementation of several algorithm corresponding to VANETs with convergence to a Nash Equilibrium
+
+Language : C++, with extern librairy ns-3. Version : ns-allinone-3.30.1
+
+AS : Convergence to a Nash equilibrium through the selection of RAT (Radio Access Technology) and path.
+
